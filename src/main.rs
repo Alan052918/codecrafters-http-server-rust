@@ -1,6 +1,6 @@
 // Uncomment this block to pass the first stage
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{Read, Write},
     net::{TcpListener, TcpStream},
     str::FromStr,
 };
@@ -24,18 +24,18 @@ fn main() {
 }
 
 fn handle_connection(mut stream: TcpStream) {
-    let request: Vec<String> = BufReader::new(&stream)
-        .lines()
-        .map(|result| result.unwrap())
-        .take_while(|line| !line.is_empty())
-        .collect();
-    request.iter().for_each(|line| println!("{}", line));
+    let mut buffer = [0; 1024]; // Create a mutable buffer of fixed size
+    let bytes_read = stream
+        .read(&mut buffer)
+        .expect("Failed to read from stream");
+    let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string(); // Convert the buffer to a string
+    println!("{}", request);
 
-    let request_line = HttpRequest::from_str(request[0].as_str()).unwrap();
+    let request_line = HttpRequest::from_str(&request).unwrap();
     let (response_status, response_body) = match request_line.target {
         HttpTarget::Root => (HttpStatus::Ok, "Hello, World!".to_string()),
-        HttpTarget::Echo(ref s) => (HttpStatus::Ok, s.clone()),
-        HttpTarget::NotFound => (HttpStatus::NotFound, "".to_string()),
+        HttpTarget::Echo(s) => (HttpStatus::Ok, s),
+        HttpTarget::NotFound => (HttpStatus::NotFound, String::new()),
     };
     let response = HttpResponse {
         version: HttpVersion::Http11,
@@ -61,14 +61,21 @@ struct HttpRequest {
 impl FromStr for HttpRequest {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut line = s.split_whitespace();
-        let method = HttpMethod::from_str(line.next().unwrap())?;
-        let target = HttpTarget::from_str(line.next().unwrap())?;
-        let version = HttpVersion::from_str(line.next().unwrap())?;
-        let host = line.next().unwrap_or("Fail to parse host").to_string();
-        let user_agent = line
+        let mut request_lines = s.lines();
+        let mut start_line = request_lines
             .next()
-            .unwrap_or("Fail to parse user agent")
+            .expect("Failed to parse request line")
+            .split_whitespace();
+        let method = HttpMethod::from_str(start_line.next().unwrap())?;
+        let target = HttpTarget::from_str(start_line.next().unwrap())?;
+        let version = HttpVersion::from_str(start_line.next().unwrap())?;
+        let host = request_lines
+            .next()
+            .expect("Failed to parse host")
+            .to_string();
+        let user_agent = request_lines
+            .next()
+            .expect("Failed to parse user agent")
             .to_string();
 
         Ok(HttpRequest {
