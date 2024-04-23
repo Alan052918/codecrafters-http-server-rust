@@ -32,13 +32,17 @@ fn handle_connection(mut stream: TcpStream) {
     request.iter().for_each(|line| println!("{}", line));
 
     let request_line = HttpRequest::from_str(request[0].as_str()).unwrap();
-    let response_status = match request_line.target.as_str() {
-        "/" => HttpStatus::Ok,
-        _ => HttpStatus::NotFound,
+    let (response_status, response_body) = match request_line.target {
+        HttpTarget::Root => (HttpStatus::Ok, "Hello, World!".to_string()),
+        HttpTarget::Echo(ref s) => (HttpStatus::Ok, s.clone()),
+        HttpTarget::NotFound => (HttpStatus::NotFound, "".to_string()),
     };
     let response = HttpResponse {
         version: HttpVersion::Http11,
         status: response_status,
+        content_type: HttpContentType::TextPlain,
+        content_length: response_body.len(),
+        body: response_body,
     };
     stream
         .write(response.to_string().as_bytes())
@@ -48,8 +52,10 @@ fn handle_connection(mut stream: TcpStream) {
 #[allow(dead_code)]
 struct HttpRequest {
     method: HttpMethod,
-    target: String,
+    target: HttpTarget,
     version: HttpVersion,
+    host: String,
+    user_agent: String,
 }
 
 impl FromStr for HttpRequest {
@@ -57,13 +63,20 @@ impl FromStr for HttpRequest {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut line = s.split_whitespace();
         let method = HttpMethod::from_str(line.next().unwrap())?;
-        let target = line.next().unwrap().to_string();
+        let target = HttpTarget::from_str(line.next().unwrap())?;
         let version = HttpVersion::from_str(line.next().unwrap())?;
+        let host = line.next().unwrap_or("Fail to parse host").to_string();
+        let user_agent = line
+            .next()
+            .unwrap_or("Fail to parse user agent")
+            .to_string();
 
         Ok(HttpRequest {
             method,
             target,
             version,
+            host,
+            user_agent,
         })
     }
 }
@@ -71,11 +84,21 @@ impl FromStr for HttpRequest {
 struct HttpResponse {
     version: HttpVersion,
     status: HttpStatus,
+    content_type: HttpContentType,
+    content_length: usize,
+    body: String,
 }
 
 impl ToString for HttpResponse {
     fn to_string(&self) -> String {
-        format!("{} {}\r\n\r\n", self.version.as_ref(), self.status.as_ref())
+        format!(
+            "{} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
+            self.version.as_ref(),
+            self.status.as_ref(),
+            self.content_type.to_string(),
+            self.content_length,
+            self.body
+        )
     }
 }
 
@@ -97,6 +120,25 @@ impl AsRef<str> for HttpMethod {
     fn as_ref(&self) -> &str {
         match self {
             HttpMethod::Get => "GET",
+        }
+    }
+}
+
+enum HttpTarget {
+    Root,
+    Echo(String),
+    NotFound,
+}
+
+impl FromStr for HttpTarget {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "/" => Ok(HttpTarget::Root),
+            s if s.starts_with("/echo/") => Ok(HttpTarget::Echo(
+                s.strip_prefix("/echo/").unwrap().to_string(),
+            )),
+            _ => Ok(HttpTarget::NotFound),
         }
     }
 }
@@ -133,6 +175,18 @@ impl AsRef<str> for HttpStatus {
         match self {
             HttpStatus::Ok => "200 OK",
             HttpStatus::NotFound => "404 NOT FOUND",
+        }
+    }
+}
+
+enum HttpContentType {
+    TextPlain,
+}
+
+impl ToString for HttpContentType {
+    fn to_string(&self) -> String {
+        match self {
+            HttpContentType::TextPlain => "text/plain".to_string(),
         }
     }
 }
