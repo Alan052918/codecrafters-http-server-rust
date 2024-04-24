@@ -3,6 +3,7 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     str::FromStr,
+    thread,
 };
 
 fn main() {
@@ -15,7 +16,9 @@ fn main() {
 
     for stream in listener.incoming() {
         match stream {
-            Ok(mut _stream) => handle_connection(_stream),
+            Ok(_stream) => {
+                thread::spawn(move || handle_connection(_stream));
+            }
             Err(e) => {
                 println!("error: {}", e);
             }
@@ -35,7 +38,7 @@ fn handle_connection(mut stream: TcpStream) {
     let (response_status, response_body) = match request_line.target {
         HttpTarget::Root => (HttpStatus::Ok, "Hello, World!".to_string()),
         HttpTarget::Echo(s) => (HttpStatus::Ok, s),
-        HttpTarget::UserAgent => (HttpStatus::Ok, request_line.user_agent),
+        HttpTarget::UserAgent => (HttpStatus::Ok, "No user-agent provided".to_string()),
         HttpTarget::NotFound => (HttpStatus::NotFound, String::new()),
     };
     let response = HttpResponse {
@@ -55,41 +58,58 @@ struct HttpRequest {
     method: HttpMethod,
     target: HttpTarget,
     version: HttpVersion,
-    host: String,
-    user_agent: String,
+    host: Option<String>,
+    user_agent: Option<String>,
+    accept: Option<String>,
+    accept_encoding: Vec<HttpEncoding>,
+}
+
+impl HttpRequest {
+    fn new(method: HttpMethod, target: HttpTarget, version: HttpVersion) -> Self {
+        HttpRequest {
+            method,
+            target,
+            version,
+            host: None,
+            user_agent: None,
+            accept: None,
+            accept_encoding: Vec::new(),
+        }
+    }
 }
 
 impl FromStr for HttpRequest {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut request_lines = s.lines();
-        let mut start_line = request_lines
-            .next()
-            .expect("Failed to parse request line")
-            .split_whitespace();
-        let method = HttpMethod::from_str(start_line.next().unwrap())?;
-        let target = HttpTarget::from_str(start_line.next().unwrap())?;
-        let version = HttpVersion::from_str(start_line.next().unwrap())?;
-        let host = request_lines
-            .next()
-            .expect("Failed to parse host: more lines expected")
-            .strip_prefix("Host: ")
-            .expect("Failed to parse host: fail to strip prefix")
-            .to_string();
-        let user_agent = request_lines
-            .next()
-            .expect("Failed to parse user agent: more lines expected")
-            .strip_prefix("User-Agent: ")
-            .expect("Failed to parse user agent: fail to strip prefix")
-            .to_string();
+        let mut start_line = match request_lines.next() {
+            Some(line) => line.split_whitespace(),
+            None => return Err(()),
+        };
+        let method = parse_method(start_line.next())?;
+        let target = parse_target(start_line.next())?;
+        let version = parse_version(start_line.next())?;
+        let mut request = HttpRequest::new(method, target, version);
+        while let Some(line) = request_lines.next() {
+            match line {
+                line if line.to_lowercase().starts_with("host: ") => {
+                    request.host = parse_host(line).ok()
+                }
+                line if line.to_lowercase().starts_with("user-agent: ") => {
+                    request.user_agent = parse_user_agent(line).ok()
+                }
+                line if line.to_lowercase().starts_with("accept: ") => {
+                    request.accept = parse_accept(line).ok()
+                }
+                line if line.to_lowercase().starts_with("accept-encoding: ") => {
+                    request.accept_encoding = parse_accept_encoding(line).ok().unwrap_or(Vec::new())
+                }
+                "" => break,
+                _ => continue,
+            }
+        }
 
-        Ok(HttpRequest {
-            method,
-            target,
-            version,
-            host,
-            user_agent,
-        })
+        Ok(request)
     }
 }
 
@@ -118,16 +138,6 @@ enum HttpMethod {
     Get,
 }
 
-impl FromStr for HttpMethod {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "GET" => Ok(HttpMethod::Get),
-            _ => Err(()),
-        }
-    }
-}
-
 impl AsRef<str> for HttpMethod {
     fn as_ref(&self) -> &str {
         match self {
@@ -143,32 +153,26 @@ enum HttpTarget {
     NotFound,
 }
 
-impl FromStr for HttpTarget {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "/" => Ok(HttpTarget::Root),
-            s if s.starts_with("/echo/") => Ok(HttpTarget::Echo(
-                s.strip_prefix("/echo/").unwrap().to_string(),
-            )),
-            "/user-agent" => Ok(HttpTarget::UserAgent),
-            _ => Ok(HttpTarget::NotFound),
+enum HttpEncoding {
+    Gzip,
+    Compress,
+    Deflate,
+    Br,
+}
+
+impl AsRef<str> for HttpEncoding {
+    fn as_ref(&self) -> &str {
+        match self {
+            HttpEncoding::Gzip => "gzip",
+            HttpEncoding::Compress => "compress",
+            HttpEncoding::Deflate => "deflate",
+            HttpEncoding::Br => "br",
         }
     }
 }
 
 enum HttpVersion {
     Http11,
-}
-
-impl FromStr for HttpVersion {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "HTTP/1.1" => Ok(HttpVersion::Http11),
-            _ => Err(()),
-        }
-    }
 }
 
 impl AsRef<str> for HttpVersion {
@@ -202,5 +206,77 @@ impl ToString for HttpContentType {
         match self {
             HttpContentType::TextPlain => "text/plain".to_string(),
         }
+    }
+}
+
+fn parse_method(s: Option<&str>) -> Result<HttpMethod, ()> {
+    match s {
+        Some("GET") => Ok(HttpMethod::Get),
+        _ => Err(()),
+    }
+}
+
+fn parse_target(s: Option<&str>) -> Result<HttpTarget, ()> {
+    match s {
+        Some("/") => Ok(HttpTarget::Root),
+        Some(s) if s.starts_with("/echo/") => Ok(HttpTarget::Echo(
+            s.strip_prefix("/echo/").unwrap().to_string(),
+        )),
+        Some("/user-agent") => Ok(HttpTarget::UserAgent),
+        _ => Ok(HttpTarget::NotFound),
+    }
+}
+
+fn parse_version(s: Option<&str>) -> Result<HttpVersion, ()> {
+    match s {
+        Some("HTTP/1.1") => Ok(HttpVersion::Http11),
+        _ => Err(()),
+    }
+}
+
+fn parse_host(s: &str) -> Result<String, ()> {
+    match s {
+        s if s.to_lowercase().starts_with("host: ") => {
+            Ok(s.split(":").nth(1).unwrap().trim().to_string())
+        }
+        _ => Err(()),
+    }
+}
+
+fn parse_user_agent(s: &str) -> Result<String, ()> {
+    match s {
+        s if s.to_lowercase().starts_with("user-agent: ") => {
+            Ok(s.split(":").nth(1).unwrap().trim().to_string())
+        }
+        _ => Err(()),
+    }
+}
+
+fn parse_accept(s: &str) -> Result<String, ()> {
+    match s {
+        s if s.to_lowercase().starts_with("accept: ") => {
+            Ok(s.split(":").nth(1).unwrap().trim().to_string())
+        }
+        _ => Err(()),
+    }
+}
+
+fn parse_accept_encoding(s: &str) -> Result<Vec<HttpEncoding>, ()> {
+    match s {
+        s if s.to_lowercase().starts_with("accept-encoding: ") => {
+            let encodings = s.split(":").nth(1).unwrap().trim().split(",");
+            let mut result = Vec::new();
+            for encoding in encodings {
+                match encoding.trim() {
+                    "gzip" => result.push(HttpEncoding::Gzip),
+                    "compress" => result.push(HttpEncoding::Compress),
+                    "deflate" => result.push(HttpEncoding::Deflate),
+                    "br" => result.push(HttpEncoding::Br),
+                    _ => continue,
+                }
+            }
+            Ok(result)
+        }
+        _ => Err(()),
     }
 }
