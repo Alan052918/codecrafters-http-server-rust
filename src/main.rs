@@ -31,14 +31,14 @@ fn handle_connection(mut stream: TcpStream) {
     let bytes_read = stream
         .read(&mut buffer)
         .expect("Failed to read from stream");
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string(); // Convert the buffer to a string
-    println!("{} {}", bytes_read, request);
+    let request_string = String::from_utf8_lossy(&buffer[..bytes_read]).to_string(); // Convert the buffer to a string
+    println!("{} {}", bytes_read, request_string);
 
-    let request_line = HttpRequest::from_str(&request).unwrap();
-    let (response_status, response_body) = match request_line.target {
+    let request = HttpRequest::from_str(&request_string).unwrap();
+    let (response_status, response_body) = match request.target {
         HttpTarget::Root => (HttpStatus::Ok, "Hello, World!".to_string()),
         HttpTarget::Echo(s) => (HttpStatus::Ok, s),
-        HttpTarget::UserAgent => (HttpStatus::Ok, "No user-agent provided".to_string()),
+        HttpTarget::UserAgent => (HttpStatus::Ok, request.user_agent.unwrap_or_default()),
         HttpTarget::NotFound => (HttpStatus::NotFound, String::new()),
     };
     let response = HttpResponse {
