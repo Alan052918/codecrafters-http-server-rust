@@ -72,11 +72,15 @@ impl FromStr for HttpRequest {
         let version = HttpVersion::from_str(start_line.next().unwrap())?;
         let host = request_lines
             .next()
-            .expect("Failed to parse host")
+            .expect("Failed to parse host: more lines expected")
+            .strip_prefix("Host: ")
+            .expect("Failed to parse host: fail to strip prefix")
             .to_string();
         let user_agent = request_lines
             .next()
-            .expect("Failed to parse user agent")
+            .expect("Failed to parse user agent: more lines expected")
+            .strip_prefix("User-Agent: ")
+            .expect("Failed to parse user agent: fail to strip prefix")
             .to_string();
 
         Ok(HttpRequest {
