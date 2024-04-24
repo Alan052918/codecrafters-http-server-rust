@@ -29,12 +29,13 @@ fn handle_connection(mut stream: TcpStream) {
         .read(&mut buffer)
         .expect("Failed to read from stream");
     let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string(); // Convert the buffer to a string
-    println!("{}", request);
+    println!("{} {}", bytes_read, request);
 
     let request_line = HttpRequest::from_str(&request).unwrap();
     let (response_status, response_body) = match request_line.target {
         HttpTarget::Root => (HttpStatus::Ok, "Hello, World!".to_string()),
         HttpTarget::Echo(s) => (HttpStatus::Ok, s),
+        HttpTarget::UserAgent => (HttpStatus::Ok, request_line.user_agent),
         HttpTarget::NotFound => (HttpStatus::NotFound, String::new()),
     };
     let response = HttpResponse {
@@ -134,6 +135,7 @@ impl AsRef<str> for HttpMethod {
 enum HttpTarget {
     Root,
     Echo(String),
+    UserAgent,
     NotFound,
 }
 
@@ -145,6 +147,7 @@ impl FromStr for HttpTarget {
             s if s.starts_with("/echo/") => Ok(HttpTarget::Echo(
                 s.strip_prefix("/echo/").unwrap().to_string(),
             )),
+            "/user-agent" => Ok(HttpTarget::UserAgent),
             _ => Ok(HttpTarget::NotFound),
         }
     }
