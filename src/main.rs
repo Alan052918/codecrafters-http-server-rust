@@ -32,7 +32,7 @@ fn main() {
                 .next()
                 .filter(|p| !p.trim().is_empty())
                 .map(|p| port = p),
-            "--directory" => args_iter
+            "--directory" | "-d" => args_iter
                 .next()
                 .filter(|d| !d.trim().is_empty())
                 .map(|d| directory = d.to_string()),
