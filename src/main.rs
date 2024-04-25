@@ -60,7 +60,7 @@ fn handle_connection(mut stream: TcpStream, directory: &str) {
         .read(&mut buffer)
         .expect("Failed to read from stream");
     let request_string = String::from_utf8_lossy(&buffer[..bytes_read]).to_string(); // Convert the buffer to a string
-    println!("{} {}", bytes_read, request_string);
+    // println!("{} {}", bytes_read, request_string);
 
     let request = HttpRequest::from_str(&request_string).unwrap();
     let (response_status, response_content_type, response_body) = match request.target {
