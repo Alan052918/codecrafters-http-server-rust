@@ -67,49 +67,95 @@ fn handle_connection(mut stream: TcpStream, directory: &str) {
 
     let request = HttpRequest::from_str(&request_string).expect("Failed to parse request");
     println!("target:{:?}", request.target);
-    let (response_status, response_content_type, response_body) = match request.target {
-        HttpTarget::Root => (
-            HttpStatus::Ok,
-            HttpContentType::TextPlain,
-            "Hello, World!".to_string(),
-        ),
-        HttpTarget::Echo(s) => (HttpStatus::Ok, HttpContentType::TextPlain, s),
-        HttpTarget::UserAgent => (
-            HttpStatus::Ok,
-            HttpContentType::TextPlain,
-            request.user_agent.expect("Failed to get user agent"),
-        ),
-        HttpTarget::Files(s) => match query_file(&s, directory) {
-            Ok(file_content) => (
-                HttpStatus::Ok,
-                HttpContentType::Application(HttpApplicationContentType::OctetStream),
-                file_content,
-            ),
-            _ => (
-                HttpStatus::NotFound,
-                HttpContentType::Application(HttpApplicationContentType::OctetStream),
-                "".to_string(),
-            ),
-        },
-        HttpTarget::NotFound => (
-            HttpStatus::NotFound,
-            HttpContentType::TextPlain,
-            String::new(),
-        ),
-    };
-    let response = HttpResponse {
-        version: request.version,
-        status: response_status,
-        content_type: response_content_type,
-        content_length: response_body.len(),
-        body: response_body,
+    let response = match request.target {
+        HttpTarget::Root => handle_root(),
+        HttpTarget::Echo(s) => handle_echo(&s),
+        HttpTarget::UserAgent => {
+            handle_user_agent(&request.user_agent.expect("Failed to get user agent"))
+        }
+        HttpTarget::Files(filename) => {
+            handle_files(&filename, directory, &request.method, &request.body)
+        }
+        HttpTarget::NotFound => handle_not_found(),
     };
     stream
         .write(response.to_string().as_bytes())
         .expect("Failed to write response buffer");
 }
 
-fn query_file(filename: &str, directory: &str) -> Result<String, std::io::Error> {
+fn handle_root() -> HttpResponse {
+    HttpResponse {
+        version: HttpVersion::Http11,
+        status: HttpStatus::Ok,
+        content_type: HttpContentType::TextPlain,
+        content_length: 13,
+        body: "Hello, World!".to_string(),
+    }
+}
+
+fn handle_echo(s: &str) -> HttpResponse {
+    HttpResponse {
+        version: HttpVersion::Http11,
+        status: HttpStatus::Ok,
+        content_type: HttpContentType::TextPlain,
+        content_length: s.len(),
+        body: s.to_string(),
+    }
+}
+
+fn handle_user_agent(user_agent: &str) -> HttpResponse {
+    HttpResponse {
+        version: HttpVersion::Http11,
+        status: HttpStatus::Ok,
+        content_type: HttpContentType::TextPlain,
+        content_length: user_agent.len(),
+        body: user_agent.to_string(),
+    }
+}
+
+fn handle_files(
+    filename: &str,
+    directory: &str,
+    request_method: &HttpMethod,
+    request_body: &str,
+) -> HttpResponse {
+    match request_method {
+        HttpMethod::Get => match get_file(filename, directory) {
+            Ok(file_content) => HttpResponse {
+                version: HttpVersion::Http11,
+                status: HttpStatus::Ok,
+                content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
+                content_length: file_content.len(),
+                body: file_content,
+            },
+            _ => HttpResponse {
+                version: HttpVersion::Http11,
+                status: HttpStatus::NotFound,
+                content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
+                content_length: 0,
+                body: String::new(),
+            },
+        },
+        HttpMethod::Post => match post_file(filename, directory, request_body) {
+            Ok(()) => HttpResponse {
+                version: HttpVersion::Http11,
+                status: HttpStatus::Created,
+                content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
+                content_length: 0,
+                body: String::new(),
+            },
+            _ => HttpResponse {
+                version: HttpVersion::Http11,
+                status: HttpStatus::NotFound,
+                content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
+                content_length: 0,
+                body: String::new(),
+            },
+        },
+    }
+}
+
+fn get_file(filename: &str, directory: &str) -> Result<String, std::io::Error> {
     let path_string = format!("{}{}", directory, filename);
     println!("filename:{}", filename);
     println!("directory:{}", directory);
@@ -125,6 +171,36 @@ fn query_file(filename: &str, directory: &str) -> Result<String, std::io::Error>
     }
 }
 
+fn post_file(filename: &str, directory: &str, content: &str) -> Result<(), std::io::Error> {
+    let path_string = format!("{}{}", directory, filename);
+    let path = Path::new(path_string.as_str());
+    if path.exists() {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .append(true)
+            .open(path)
+            .expect("Failed to open file");
+        file.write_all(content.as_bytes())
+            .expect("Failed to write to file");
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "File not found",
+        ))
+    }
+}
+
+fn handle_not_found() -> HttpResponse {
+    HttpResponse {
+        version: HttpVersion::Http11,
+        status: HttpStatus::NotFound,
+        content_type: HttpContentType::TextPlain,
+        content_length: 0,
+        body: String::new(),
+    }
+}
+
 #[allow(dead_code)]
 struct HttpRequest {
     method: HttpMethod,
@@ -134,10 +210,11 @@ struct HttpRequest {
     user_agent: Option<String>,
     accept: Option<String>,
     accept_encoding: Vec<HttpEncoding>,
+    body: String,
 }
 
 impl HttpRequest {
-    fn new(method: HttpMethod, target: HttpTarget, version: HttpVersion) -> Self {
+    fn new(method: HttpMethod, target: HttpTarget, version: HttpVersion, body: String) -> Self {
         HttpRequest {
             method,
             target,
@@ -146,6 +223,7 @@ impl HttpRequest {
             user_agent: None,
             accept: None,
             accept_encoding: Vec::new(),
+            body,
         }
     }
 }
@@ -161,7 +239,7 @@ impl FromStr for HttpRequest {
         let method = parse_method(start_line.next())?;
         let target = parse_target(start_line.next())?;
         let version = parse_version(start_line.next())?;
-        let mut request = HttpRequest::new(method, target, version);
+        let mut request = HttpRequest::new(method, target, version, String::new());
         while let Some(line) = request_lines.next() {
             match line {
                 line if line.to_lowercase().starts_with("host: ") => {
@@ -179,6 +257,9 @@ impl FromStr for HttpRequest {
                 "" => break,
                 _ => continue,
             }
+        }
+        if let Some(body) = request_lines.next() {
+            request.body = body.to_string();
         }
 
         Ok(request)
@@ -206,8 +287,10 @@ impl ToString for HttpResponse {
     }
 }
 
+#[allow(dead_code)]
 enum HttpMethod {
     Get,
+    Post,
 }
 
 enum HttpTarget {
@@ -251,6 +334,7 @@ impl ToString for HttpVersion {
 
 enum HttpStatus {
     Ok = 200,
+    Created = 201,
     NotFound = 404,
 }
 
@@ -258,6 +342,7 @@ impl ToString for HttpStatus {
     fn to_string(&self) -> String {
         match self {
             HttpStatus::Ok => "200 OK".to_string(),
+            HttpStatus::Created => "201 CREATED".to_string(),
             HttpStatus::NotFound => "404 NOT FOUND".to_string(),
         }
     }
