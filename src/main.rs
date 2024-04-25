@@ -109,17 +109,19 @@ fn handle_connection(mut stream: TcpStream, directory: &str) {
         .expect("Failed to write response buffer");
 }
 
-fn query_file(path: &str, directory: &str) -> Result<String, std::io::Error> {
-    println!("path:{}", path);
+fn query_file(filename: &str, directory: &str) -> Result<String, std::io::Error> {
+    let path_string = format!("{}{}", directory, filename);
+    println!("filename:{}", filename);
     println!("directory:{}", directory);
-    match directory {
-        directory if path.starts_with(directory) && Path::new(path).exists() => {
-            fs::read_to_string(path)
-        }
-        _ => Err(std::io::Error::new(
+    println!("path_string:{}", path_string);
+    let path = Path::new(path_string.as_str());
+    if path.exists() {
+        fs::read_to_string(path)
+    } else {
+        Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "File not found",
-        )),
+        ))
     }
 }
 
