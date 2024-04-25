@@ -1,23 +1,51 @@
 // Uncomment this block to pass the first stage
 use std::{
+    env, fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    path::Path,
     str::FromStr,
     thread,
 };
+
+const IP_ADDR: &str = "127.0.0.1";
+const PORT: &str = "4221";
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
 
-    // Uncomment this block to pass the first stage
+    let mut ip_addr = IP_ADDR.to_string();
+    let mut port = PORT.to_string();
+    let mut directory = "".to_string();
 
-    let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
+    let mut args_iter = env::args().filter(|arg| !arg.trim().is_empty());
+    while let Some(arg) = args_iter.next() {
+        match arg.as_str() {
+            "--ip" => args_iter
+                .next()
+                .filter(|ip| !ip.trim().is_empty())
+                .map(|ip| ip_addr = ip),
+            "--port" => args_iter
+                .next()
+                .filter(|p| !p.trim().is_empty())
+                .map(|p| port = p),
+            "--directory" => args_iter
+                .next()
+                .filter(|d| !d.trim().is_empty())
+                .map(|d| directory = d.to_string()),
+            _ => continue,
+        };
+    }
+
+    let addr = format!("{}:{}", ip_addr, port);
+    let listener = TcpListener::bind(&addr).expect(format!("Failed to bind: {}", &addr).as_str());
 
     for stream in listener.incoming() {
         match stream {
-            Ok(_stream) => {
-                thread::spawn(move || handle_connection(_stream));
+            Ok(stream) => {
+                let directory = directory.clone();
+                thread::spawn(move || handle_connection(stream, directory.as_str()));
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -26,7 +54,7 @@ fn main() {
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
+fn handle_connection(mut stream: TcpStream, directory: &str) {
     let mut buffer = [0; 1024]; // Create a mutable buffer of fixed size
     let bytes_read = stream
         .read(&mut buffer)
@@ -35,22 +63,58 @@ fn handle_connection(mut stream: TcpStream) {
     println!("{} {}", bytes_read, request_string);
 
     let request = HttpRequest::from_str(&request_string).unwrap();
-    let (response_status, response_body) = match request.target {
-        HttpTarget::Root => (HttpStatus::Ok, "Hello, World!".to_string()),
-        HttpTarget::Echo(s) => (HttpStatus::Ok, s),
-        HttpTarget::UserAgent => (HttpStatus::Ok, request.user_agent.unwrap_or_default()),
-        HttpTarget::NotFound => (HttpStatus::NotFound, String::new()),
+    let (response_status, response_content_type, response_body) = match request.target {
+        HttpTarget::Root => (
+            HttpStatus::Ok,
+            HttpContentType::TextPlain,
+            "Hello, World!".to_string(),
+        ),
+        HttpTarget::Echo(s) => (HttpStatus::Ok, HttpContentType::TextPlain, s),
+        HttpTarget::UserAgent => (
+            HttpStatus::Ok,
+            HttpContentType::TextPlain,
+            request.user_agent.expect("Failed to get user agent"),
+        ),
+        HttpTarget::Files(s) => match query_file(&s, directory) {
+            Ok(file_content) => (
+                HttpStatus::Ok,
+                HttpContentType::Application(HttpApplicationContentType::OctetStream),
+                file_content,
+            ),
+            _ => (
+                HttpStatus::NotFound,
+                HttpContentType::Application(HttpApplicationContentType::OctetStream),
+                "".to_string(),
+            ),
+        },
+        HttpTarget::NotFound => (
+            HttpStatus::NotFound,
+            HttpContentType::TextPlain,
+            String::new(),
+        ),
     };
     let response = HttpResponse {
-        version: HttpVersion::Http11,
+        version: request.version,
         status: response_status,
-        content_type: HttpContentType::TextPlain,
+        content_type: response_content_type,
         content_length: response_body.len(),
         body: response_body,
     };
     stream
         .write(response.to_string().as_bytes())
         .expect("Failed to write response buffer");
+}
+
+fn query_file(path: &str, directory: &str) -> Result<String, std::io::Error> {
+    match directory {
+        directory if path.starts_with(directory) && Path::new(path).exists() => {
+            fs::read_to_string(path)
+        }
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "File not found",
+        )),
+    }
 }
 
 #[allow(dead_code)]
@@ -125,8 +189,8 @@ impl ToString for HttpResponse {
     fn to_string(&self) -> String {
         format!(
             "{} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
-            self.version.as_ref(),
-            self.status.as_ref(),
+            self.version.to_string(),
+            self.status.to_string(),
             self.content_type.to_string(),
             self.content_length,
             self.body
@@ -138,18 +202,11 @@ enum HttpMethod {
     Get,
 }
 
-impl AsRef<str> for HttpMethod {
-    fn as_ref(&self) -> &str {
-        match self {
-            HttpMethod::Get => "GET",
-        }
-    }
-}
-
 enum HttpTarget {
     Root,
     Echo(String),
     UserAgent,
+    Files(String),
     NotFound,
 }
 
@@ -160,25 +217,14 @@ enum HttpEncoding {
     Br,
 }
 
-impl AsRef<str> for HttpEncoding {
-    fn as_ref(&self) -> &str {
-        match self {
-            HttpEncoding::Gzip => "gzip",
-            HttpEncoding::Compress => "compress",
-            HttpEncoding::Deflate => "deflate",
-            HttpEncoding::Br => "br",
-        }
-    }
-}
-
 enum HttpVersion {
     Http11,
 }
 
-impl AsRef<str> for HttpVersion {
-    fn as_ref(&self) -> &str {
+impl ToString for HttpVersion {
+    fn to_string(&self) -> String {
         match self {
-            HttpVersion::Http11 => "HTTP/1.1",
+            HttpVersion::Http11 => "HTTP/1.1".to_string(),
         }
     }
 }
@@ -188,23 +234,37 @@ enum HttpStatus {
     NotFound = 404,
 }
 
-impl AsRef<str> for HttpStatus {
-    fn as_ref(&self) -> &str {
+impl ToString for HttpStatus {
+    fn to_string(&self) -> String {
         match self {
-            HttpStatus::Ok => "200 OK",
-            HttpStatus::NotFound => "404 NOT FOUND",
+            HttpStatus::Ok => "200 OK".to_string(),
+            HttpStatus::NotFound => "404 NOT FOUND".to_string(),
         }
     }
 }
 
 enum HttpContentType {
     TextPlain,
+    Application(HttpApplicationContentType),
 }
 
 impl ToString for HttpContentType {
     fn to_string(&self) -> String {
         match self {
             HttpContentType::TextPlain => "text/plain".to_string(),
+            HttpContentType::Application(content_type) => content_type.to_string(),
+        }
+    }
+}
+
+enum HttpApplicationContentType {
+    OctetStream,
+}
+
+impl ToString for HttpApplicationContentType {
+    fn to_string(&self) -> String {
+        match self {
+            HttpApplicationContentType::OctetStream => "application/octet-stream".to_string(),
         }
     }
 }
@@ -223,6 +283,9 @@ fn parse_target(s: Option<&str>) -> Result<HttpTarget, ()> {
             s.strip_prefix("/echo/").unwrap().to_string(),
         )),
         Some("/user-agent") => Ok(HttpTarget::UserAgent),
+        Some(s) if s.starts_with("/files/") => Ok(HttpTarget::Files(
+            s.strip_prefix("/files/").unwrap().to_string(),
+        )),
         _ => Ok(HttpTarget::NotFound),
     }
 }
