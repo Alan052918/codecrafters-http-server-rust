@@ -1,6 +1,8 @@
 // Uncomment this block to pass the first stage
 use std::{
-    env, fs,
+    env,
+    fmt::Debug,
+    fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::Path,
@@ -34,6 +36,7 @@ fn main() {
                 .next()
                 .filter(|d| !d.trim().is_empty())
                 .map(|d| directory = d.to_string()),
+            "" => break,
             _ => continue,
         };
     }
@@ -60,9 +63,10 @@ fn handle_connection(mut stream: TcpStream, directory: &str) {
         .read(&mut buffer)
         .expect("Failed to read from stream");
     let request_string = String::from_utf8_lossy(&buffer[..bytes_read]).to_string(); // Convert the buffer to a string
-    // println!("{} {}", bytes_read, request_string);
+    println!("{} {}", bytes_read, request_string);
 
-    let request = HttpRequest::from_str(&request_string).unwrap();
+    let request = HttpRequest::from_str(&request_string).expect("Failed to parse request");
+    println!("target:{:?}", request.target);
     let (response_status, response_content_type, response_body) = match request.target {
         HttpTarget::Root => (
             HttpStatus::Ok,
@@ -106,6 +110,8 @@ fn handle_connection(mut stream: TcpStream, directory: &str) {
 }
 
 fn query_file(path: &str, directory: &str) -> Result<String, std::io::Error> {
+    println!("path:{}", path);
+    println!("directory:{}", directory);
     match directory {
         directory if path.starts_with(directory) && Path::new(path).exists() => {
             fs::read_to_string(path)
@@ -188,10 +194,10 @@ struct HttpResponse {
 impl ToString for HttpResponse {
     fn to_string(&self) -> String {
         format!(
-            "{} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
+            "{} {}\r\nContent-Type: {:?}\r\nContent-Length: {}\r\n\r\n{}",
             self.version.to_string(),
             self.status.to_string(),
-            self.content_type.to_string(),
+            self.content_type,
             self.content_length,
             self.body
         )
@@ -208,6 +214,18 @@ enum HttpTarget {
     UserAgent,
     Files(String),
     NotFound,
+}
+
+impl Debug for HttpTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HttpTarget::Root => write!(f, "/"),
+            HttpTarget::Echo(s) => write!(f, "/echo/{}", s),
+            HttpTarget::UserAgent => write!(f, "/user-agent"),
+            HttpTarget::Files(s) => write!(f, "/files/{}", s),
+            HttpTarget::NotFound => write!(f, "Not Found"),
+        }
+    }
 }
 
 enum HttpEncoding {
@@ -248,11 +266,11 @@ enum HttpContentType {
     Application(HttpApplicationContentType),
 }
 
-impl ToString for HttpContentType {
-    fn to_string(&self) -> String {
+impl Debug for HttpContentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HttpContentType::TextPlain => "text/plain".to_string(),
-            HttpContentType::Application(content_type) => content_type.to_string(),
+            HttpContentType::TextPlain => write!(f, "text/plain"),
+            HttpContentType::Application(content_type) => write!(f, "{:?}", content_type),
         }
     }
 }
@@ -261,10 +279,10 @@ enum HttpApplicationContentType {
     OctetStream,
 }
 
-impl ToString for HttpApplicationContentType {
-    fn to_string(&self) -> String {
+impl Debug for HttpApplicationContentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HttpApplicationContentType::OctetStream => "application/octet-stream".to_string(),
+            HttpApplicationContentType::OctetStream => write!(f, "application/octet-stream"),
         }
     }
 }
