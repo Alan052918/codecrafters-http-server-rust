@@ -139,17 +139,21 @@ fn handle_get_file(filename: &str, directory: &str) -> HttpResponse {
 }
 
 fn handle_post_file(filename: &str, directory: &str, content: &str) -> HttpResponse {
-    let path_string = format!("{}{}", directory, filename);
-    println!("post path_string:{}", path_string);
-    let path = Path::new(path_string.as_str());
-    let mut file = fs::File::create(path).expect("Failed to create file");
+    let path = Path::new(directory).join(filename);
+
+    // Create parent directory if it does not exist
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("Failed to create directories");
+    }
+
+    let mut file = fs::File::create(&path).expect("Failed to create file");
     file.write_all(content.as_bytes())
         .expect("Failed to write to file");
 
     HttpResponse {
         version: HttpVersion::Http11,
-        status: HttpStatus::Ok,
-        content_type: HttpContentType::TextPlain,
+        status: HttpStatus::Created,
+        content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
         content_length: 0,
         body: String::new(),
     }
