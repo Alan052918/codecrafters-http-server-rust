@@ -32,7 +32,7 @@ fn main() {
                 .next()
                 .filter(|p| !p.trim().is_empty())
                 .map(|p| port = p),
-            "--directory" | "-d" => args_iter
+            "--directory" => args_iter
                 .next()
                 .filter(|d| !d.trim().is_empty())
                 .map(|d| directory = d.to_string()),
@@ -67,16 +67,17 @@ fn handle_connection(mut stream: TcpStream, directory: &str) {
 
     let request = HttpRequest::from_str(&request_string).expect("Failed to parse request");
     println!("target:{:?}", request.target);
-    let response = match request.target {
-        HttpTarget::Root => handle_root(),
-        HttpTarget::Echo(s) => handle_echo(&s),
-        HttpTarget::UserAgent => {
+    let response = match (request.method, request.target) {
+        (HttpMethod::Get, HttpTarget::Root) => handle_root(),
+        (HttpMethod::Get, HttpTarget::Echo(s)) => handle_echo(&s),
+        (HttpMethod::Get, HttpTarget::UserAgent) => {
             handle_user_agent(&request.user_agent.expect("Failed to get user agent"))
         }
-        HttpTarget::Files(filename) => {
-            handle_files(&filename, directory, &request.method, &request.body)
+        (HttpMethod::Get, HttpTarget::Files(filename)) => handle_get_file(&filename, directory),
+        (HttpMethod::Post, HttpTarget::Files(filename)) => {
+            handle_post_file(&filename, directory, &request.body)
         }
-        HttpTarget::NotFound => handle_not_found(),
+        _ => handle_not_found(),
     };
     stream
         .write(response.to_string().as_bytes())
@@ -113,81 +114,44 @@ fn handle_user_agent(user_agent: &str) -> HttpResponse {
     }
 }
 
-fn handle_files(
-    filename: &str,
-    directory: &str,
-    request_method: &HttpMethod,
-    request_body: &str,
-) -> HttpResponse {
-    match request_method {
-        HttpMethod::Get => match get_file(filename, directory) {
-            Ok(file_content) => HttpResponse {
-                version: HttpVersion::Http11,
-                status: HttpStatus::Ok,
-                content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
-                content_length: file_content.len(),
-                body: file_content,
-            },
-            _ => HttpResponse {
-                version: HttpVersion::Http11,
-                status: HttpStatus::NotFound,
-                content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
-                content_length: 0,
-                body: String::new(),
-            },
-        },
-        HttpMethod::Post => match post_file(filename, directory, request_body) {
-            Ok(()) => HttpResponse {
-                version: HttpVersion::Http11,
-                status: HttpStatus::Created,
-                content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
-                content_length: 0,
-                body: String::new(),
-            },
-            _ => HttpResponse {
-                version: HttpVersion::Http11,
-                status: HttpStatus::NotFound,
-                content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
-                content_length: 0,
-                body: String::new(),
-            },
-        },
+fn handle_get_file(filename: &str, directory: &str) -> HttpResponse {
+    let path_string = format!("{}{}", directory, filename);
+    println!("get path_string:{}", path_string);
+    let path = Path::new(path_string.as_str());
+
+    if let Ok(content) = fs::read_to_string(path) {
+        HttpResponse {
+            version: HttpVersion::Http11,
+            status: HttpStatus::Ok,
+            content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
+            content_length: content.len(),
+            body: content,
+        }
+    } else {
+        HttpResponse {
+            version: HttpVersion::Http11,
+            status: HttpStatus::NotFound,
+            content_type: HttpContentType::Application(HttpApplicationContentType::OctetStream),
+            content_length: 0,
+            body: String::new(),
+        }
     }
 }
 
-fn get_file(filename: &str, directory: &str) -> Result<String, std::io::Error> {
+fn handle_post_file(filename: &str, directory: &str, content: &str) -> HttpResponse {
     let path_string = format!("{}{}", directory, filename);
-    println!("filename:{}", filename);
-    println!("directory:{}", directory);
-    println!("path_string:{}", path_string);
+    println!("post path_string:{}", path_string);
     let path = Path::new(path_string.as_str());
-    if path.exists() {
-        fs::read_to_string(path)
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "File not found",
-        ))
-    }
-}
+    let mut file = fs::File::create(path).expect("Failed to create file");
+    file.write_all(content.as_bytes())
+        .expect("Failed to write to file");
 
-fn post_file(filename: &str, directory: &str, content: &str) -> Result<(), std::io::Error> {
-    let path_string = format!("{}{}", directory, filename);
-    let path = Path::new(path_string.as_str());
-    if path.exists() {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(path)
-            .expect("Failed to open file");
-        file.write_all(content.as_bytes())
-            .expect("Failed to write to file");
-        Ok(())
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "File not found",
-        ))
+    HttpResponse {
+        version: HttpVersion::Http11,
+        status: HttpStatus::Ok,
+        content_type: HttpContentType::TextPlain,
+        content_length: 0,
+        body: String::new(),
     }
 }
 
@@ -362,14 +326,19 @@ impl Debug for HttpContentType {
     }
 }
 
+#[allow(dead_code)]
 enum HttpApplicationContentType {
     OctetStream,
+    XWwwFormUrlencoded,
 }
 
 impl Debug for HttpApplicationContentType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HttpApplicationContentType::OctetStream => write!(f, "application/octet-stream"),
+            HttpApplicationContentType::XWwwFormUrlencoded => {
+                write!(f, "application/x-www-form-urlencoded")
+            }
         }
     }
 }
@@ -377,6 +346,7 @@ impl Debug for HttpApplicationContentType {
 fn parse_method(s: Option<&str>) -> Result<HttpMethod, ()> {
     match s {
         Some("GET") => Ok(HttpMethod::Get),
+        Some("POST") => Ok(HttpMethod::Post),
         _ => Err(()),
     }
 }
